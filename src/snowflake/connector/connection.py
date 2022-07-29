@@ -23,6 +23,7 @@ from typing import Any, Callable, Generator, Iterable, NamedTuple, Sequence
 
 from . import errors, proxy
 from .auth import Auth
+from .auth_by_plugin import AuthByPlugin
 from .auth_default import AuthByDefault
 from .auth_keypair import AuthByKeyPair
 from .auth_oauth import AuthByOAuth
@@ -81,6 +82,7 @@ from .network import (
     ReauthenticationRequest,
     SnowflakeRestful,
 )
+from .reauth_by_plugin import ReauthByPlugin
 from .sqlstate import SQLSTATE_CONNECTION_NOT_EXISTS, SQLSTATE_FEATURE_NOT_SUPPORTED
 from .telemetry import TelemetryClient
 from .telemetry_oob import TelemetryService
@@ -139,6 +141,8 @@ DEFAULT_CONFIGURATION: dict[str, tuple[Any, type | tuple[type, ...]]] = {
     "authenticator": (DEFAULT_AUTHENTICATOR, (type(None), str)),
     "mfa_callback": (None, (type(None), Callable)),
     "password_callback": (None, (type(None), Callable)),
+    "auth_class": (None, (type(None), AuthByPlugin)),
+    "reauth_class": (None, (type(None), ReauthByPlugin)),
     "application": (CLIENT_NAME, (type(None), str)),
     "internal_application_name": (CLIENT_NAME, (type(None), str)),
     "internal_application_version": (CLIENT_VERSION, (type(None), str)),
@@ -506,6 +510,28 @@ class SnowflakeConnection:
     def arrow_number_to_decimal_setter(self, value: bool):
         self._arrow_number_to_decimal = value
 
+    @property
+    def auth_class(self):
+        return self._auth_class
+
+    @auth_class.setter
+    def auth_class(self, value):
+        if isinstance(value, AuthByPlugin):
+            self._auth_class = value
+        else:
+            raise TypeError("auth_class must subclass AuthByPlugin")
+
+    @property
+    def reauth_class(self):
+        return self._reauth_class
+
+    @reauth_class.setter
+    def reauth_class(self, value):
+        if isinstance(value, ReauthByPlugin):
+            self._reauth_class = value
+        else:
+            raise TypeError("reauth_class must subclass ReauthByPlugin")
+
     def connect(self, **kwargs):
         """Establishes connection to Snowflake."""
         logger.debug("connect")
@@ -715,7 +741,9 @@ class SnowflakeConnection:
             if "SF_OCSP_RESPONSE_CACHE_SERVER_URL" in os.environ:
                 del os.environ["SF_OCSP_RESPONSE_CACHE_SERVER_URL"]
 
-        if self._authenticator == DEFAULT_AUTHENTICATOR:
+        if self.auth_class:
+            auth_instance = self.auth_class
+        elif self._authenticator == DEFAULT_AUTHENTICATOR:
             auth_instance = AuthByDefault(self._password)
         elif self._authenticator == EXTERNAL_BROWSER_AUTHENTICATOR:
             auth_instance = AuthByWebBrowser(
@@ -1027,6 +1055,9 @@ class SnowflakeConnection:
         )
         self._authenticate(auth_instance)
         return {"success": True}
+
+    def _reauthenticate(self):
+        return self._reauth_class.reauthenticate()
 
     def _authenticate(self, auth_instance):
         # make some changes if needed before real __authenticate
